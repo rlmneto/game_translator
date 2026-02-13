@@ -1,0 +1,7 @@
+easyocr
+mss
+Pillow
+pynput
+openai
+numpy
+pygame
