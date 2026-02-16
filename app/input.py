@@ -1,6 +1,10 @@
+import logging
 import threading
 import time
+
 from pynput import keyboard as pynput_keyboard
+
+logger = logging.getLogger(__name__)
 
 try:
     import pygame
@@ -47,7 +51,7 @@ class InputManager:
                 if key == target:
                     self.root.after(0, self.on_trigger)
             except Exception:
-                pass
+                logger.debug("Key press handler error", exc_info=True)
 
         self._kb_listener = pynput_keyboard.Listener(on_press=on_press)
         self._kb_listener.daemon = True
@@ -122,6 +126,7 @@ class InputManager:
 
                 time.sleep(1 / 60)
             except Exception:
+                logger.debug("Gamepad loop error", exc_info=True)
                 time.sleep(0.5)
 
     def _check_gamepad_release(self):
@@ -144,6 +149,7 @@ class InputManager:
             else:
                 self.root.after(200, self._check_gamepad_release)
         except Exception:
+            logger.debug("Gamepad release check error", exc_info=True)
             self._finish_gamepad()
 
     def _finish_gamepad(self):

@@ -3,5 +3,17 @@
   "gamepad_buttons": [
     15
   ],
-  "gamepad_enabled": true
+  "gamepad_enabled": true,
+  "source_language": "auto",
+  "target_language": "pt-br",
+  "ocr_engine": "easyocr",
+  "ocr_quality": "fast",
+  "translation_engine": "openai",
+  "api_model": "gpt-4o",
+  "overlay_alpha": 0.25,
+  "overlay_always_visible": true,
+  "auto_translate": false,
+  "auto_translate_interval": 3,
+  "active_profile": "default",
+  "text_overlay": true
 }

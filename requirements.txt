@@ -5,3 +5,14 @@ pynput
 openai
 numpy
 pygame
+deep-translator
+# Optional: uncomment if using Tesseract OCR engine
+# pytesseract
+# Optional: uncomment for RapidOCR (fast, lightweight OCR)
+# rapidocr-onnxruntime
+# Optional: uncomment for PaddleOCR
+# paddleocr
+# paddlepaddle
+# Optional: uncomment for MarianMT offline translation
+# transformers
+# sentencepiece
