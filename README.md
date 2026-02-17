@@ -2,8 +2,8 @@
 
 Tradutor de tela em tempo real para jogos. Captura uma área da tela, reconhece o texto via OCR e traduz entre **qualquer par de idiomas** usando múltiplos motores de tradução.
 
-![Tradução em ação](assets/screenshot1.png)
-![Outro exemplo](assets/screenshot2.png)
+![Menu](assets/menu.png)
+![Overlay](assets/overlay.gif)
 
 ## Funcionalidades
 
