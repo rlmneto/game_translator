@@ -124,6 +124,7 @@ OCR_QUALITY_OPTIONS = {
     "fast":     "Rápido",
     "balanced": "Balanceado",
     "quality":  "Qualidade",
+    "pdf":      "PDF / Documento",
 }
 
 OCR_PRESETS: dict[str, dict] = {
@@ -134,6 +135,7 @@ OCR_PRESETS: dict[str, dict] = {
         "adjust_contrast": 0.5,
         "scale_factor":   2,
         "blur_radius":    1.0,
+        "preprocess":     "game",
     },
     "balanced": {
         "text_threshold": 0.5,
@@ -142,6 +144,7 @@ OCR_PRESETS: dict[str, dict] = {
         "adjust_contrast": 0.7,
         "scale_factor":   4,
         "blur_radius":    1.5,
+        "preprocess":     "game",
     },
     "quality": {
         "text_threshold": 0.3,
@@ -150,6 +153,16 @@ OCR_PRESETS: dict[str, dict] = {
         "adjust_contrast": 0.8,
         "scale_factor":   6,
         "blur_radius":    2.0,
+        "preprocess":     "game",
+    },
+    "pdf": {
+        "text_threshold": 0.4,
+        "low_text":       0.2,
+        "contrast_ths":   0.2,
+        "adjust_contrast": 0.7,
+        "scale_factor":   3,
+        "blur_radius":    0,
+        "preprocess":     "document",
     },
 }
 
@@ -206,6 +219,14 @@ GAME_PRESETS: dict[str, dict] = {
         "description":     "JRPGs com menus e diálogos",
         "ocr_quality":     "balanced",
         "source_language": "ja",
+        "target_language": "pt-br",
+        "api_model":       "gpt-4o-mini",
+    },
+    "pdf_document": {
+        "label":           "PDF / Documento",
+        "description":     "Livros, PDFs e documentos com texto impresso",
+        "ocr_quality":     "pdf",
+        "source_language": "en",
         "target_language": "pt-br",
         "api_model":       "gpt-4o-mini",
     },

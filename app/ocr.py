@@ -147,7 +147,8 @@ class OCREngine:
     def _extract_easyocr(self, img: Image.Image, lang: str,
                          preset: dict, on_status=None) -> str:
         reader = self._get_easyocr_reader(lang, on_status)
-        use_allowlist = lang in ("auto", "en")
+        is_document = preset.get("preprocess") == "document"
+        use_allowlist = lang in ("auto", "en") and not is_document
         results = reader.readtext(
             np.array(img),
             detail=1,
@@ -218,6 +219,14 @@ class OCREngine:
 
     @staticmethod
     def _preprocess(img: Image.Image, preset: dict) -> Image.Image:
+        mode = preset.get("preprocess", "game")
+        if mode == "document":
+            return OCREngine._preprocess_document(img, preset)
+        return OCREngine._preprocess_game(img, preset)
+
+    @staticmethod
+    def _preprocess_game(img: Image.Image, preset: dict) -> Image.Image:
+        """Preprocessing for game screens: bright text on dark backgrounds."""
         arr = np.array(img)
         r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
 
@@ -235,6 +244,51 @@ class OCREngine:
         out = out.point(lambda p: 255 if p > 80 else 0)
         out = out.filter(ImageFilter.MaxFilter(size=3))
         return ImageOps.invert(out)
+
+    @staticmethod
+    def _preprocess_document(img: Image.Image, preset: dict) -> Image.Image:
+        """Preprocessing for documents/PDFs: dark text on light backgrounds.
+
+        Uses minimal processing to preserve letter shapes that aggressive
+        game-oriented binarization would destroy.  Handles both large bold
+        headings and small body text.
+        """
+        # Convert to grayscale
+        gray = img.convert("L")
+
+        # Auto-contrast to normalise brightness & improve readability
+        gray = ImageOps.autocontrast(gray, cutoff=0.5)
+
+        # Scale up so thin strokes in small text survive binarization
+        scale = preset.get("scale_factor", 3)
+        if scale > 1:
+            gray = gray.resize(
+                (gray.width * scale, gray.height * scale), Image.LANCZOS,
+            )
+
+        # Light sharpening to crisp up edges
+        gray = gray.filter(ImageFilter.SHARPEN)
+
+        # Local adaptive thresholding ---------------------------------
+        # A single global threshold fails when the page has both heavy
+        # headings and thin body text.  We approximate local adaptive
+        # thresholding by comparing each pixel to a heavily-blurred
+        # (local-mean) version of itself.
+        arr = np.array(gray, dtype=np.float32)
+
+        # Local mean via large-radius box blur (kernel ~1/15 of height)
+        radius = max(arr.shape[0] // 15, 15)
+        local_mean = np.array(
+            Image.fromarray(arr.astype(np.uint8), mode="L")
+            .filter(ImageFilter.BoxBlur(radius)),
+            dtype=np.float32,
+        )
+
+        # Pixel is "ink" when it is noticeably darker than its surround
+        offset = 12                       # sensitivity — lower = more text kept
+        binary = np.where(arr < local_mean - offset, 0, 255).astype(np.uint8)
+
+        return Image.fromarray(binary, mode="L")
 
     # -- class helpers ---------------------------------------------------
 

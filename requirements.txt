@@ -6,6 +6,11 @@ openai
 numpy
 pygame
 deep-translator
+edge-tts
+# Optional: uncomment for offline TTS (robotic voice)
+# pyttsx3
+# Optional: uncomment for Google TTS (online)
+# gTTS
 # Optional: uncomment if using Tesseract OCR engine
 # pytesseract
 # Optional: uncomment for RapidOCR (fast, lightweight OCR)

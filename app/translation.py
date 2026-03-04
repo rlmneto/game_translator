@@ -5,6 +5,7 @@ Supports: OpenAI (GitHub Models), deep-translator (Google), MarianMT (offline).
 
 import logging
 import os
+import time
 
 from .cache import TranslationCache
 from .config import BASE_DIR, LANGUAGES, MARIAN_MODEL_MAP
@@ -61,6 +62,38 @@ DETECT_PROMPT = (
     "then the {target_language} translation. No explanations."
 )
 
+# -- Document / PDF specific prompts ------------------------------------
+
+DOCUMENT_SYSTEM_PROMPT = (
+    "You are a translator for printed documents and books. "
+    "The user provides {source_desc} text extracted via OCR from a document page. "
+    "The OCR may contain small errors or formatting issues. Your task:\n"
+    "1. Fix any obvious OCR errors in the original text.\n"
+    "2. Translate the corrected text to {target_language}.\n"
+    "3. PRESERVE the original formatting: keep line breaks, paragraph spacing, "
+    "indentation, bullet points, and the overall visual structure of the text.\n"
+    "4. Keep proper nouns (names, titles, places) in their original language.\n"
+    "Reply with ONLY: first the corrected original text (preserving formatting), "
+    "then '---', then the {target_language} translation (also preserving formatting). "
+    "No explanations."
+)
+
+DOCUMENT_DETECT_PROMPT = (
+    "You are a translator for printed documents and books. "
+    "The user provides text extracted via OCR from a document page "
+    "(the source language is unknown). The OCR may contain small errors. "
+    "Your task:\n"
+    "1. Detect the source language.\n"
+    "2. Fix any obvious OCR errors in the original text.\n"
+    "3. Translate the corrected text to {target_language}.\n"
+    "4. PRESERVE the original formatting: keep line breaks, paragraph spacing, "
+    "indentation, bullet points, and the overall visual structure of the text.\n"
+    "5. Keep proper nouns (names, titles, places) in their original language.\n"
+    "Reply with ONLY: first the corrected original text (preserving formatting), "
+    "then '---', then the {target_language} translation (also preserving formatting). "
+    "No explanations."
+)
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -74,6 +107,7 @@ class TranslationService:
         self._source_lang = "auto"
         self._target_lang = "pt-br"
         self._engine = "openai"
+        self._content_type = "game"   # "game" or "document"
         self._marian_models: dict[str, tuple] = {}  # model_name → (model, tokenizer)
 
         token = self._load_token()
@@ -81,6 +115,7 @@ class TranslationService:
             self.client = OpenAI(
                 base_url="https://models.inference.ai.azure.com",
                 api_key=token,
+                max_retries=0,          # we handle retries ourselves
             )
             logger.info("TranslationService initialised with API token")
         else:
@@ -101,7 +136,8 @@ class TranslationService:
     def configure(self, model: str | None = None,
                   source_lang: str | None = None,
                   target_lang: str | None = None,
-                  engine: str | None = None):
+                  engine: str | None = None,
+                  content_type: str | None = None):
         if model is not None:
             self._model = model
         if source_lang is not None:
@@ -110,9 +146,12 @@ class TranslationService:
             self._target_lang = target_lang
         if engine is not None:
             self._engine = engine
+        if content_type is not None:
+            self._content_type = content_type
         logger.info(
-            "Translation configured: engine=%s  model=%s  %s → %s",
+            "Translation configured: engine=%s  model=%s  %s → %s  content=%s",
             self._engine, self._model, self._source_lang, self._target_lang,
+            self._content_type,
         )
 
     def translate(self, text: str, *,
@@ -137,7 +176,24 @@ class TranslationService:
         elif self._engine == "marian":
             corrected, translation = self._translate_marian(text, src, tgt)
         else:
-            corrected, translation = self._translate_openai(text, src, tgt, mdl)
+            try:
+                corrected, translation = self._translate_openai(text, src, tgt, mdl)
+            except Exception as exc:
+                err_msg = str(exc)
+                is_rate_limit = (
+                    "429" in err_msg
+                    or "rate" in err_msg.lower()
+                )
+                if is_rate_limit and DEEP_TRANSLATOR_AVAILABLE:
+                    logger.warning(
+                        "OpenAI rate limit — falling back to Google Translate"
+                    )
+                    corrected, translation = self._translate_deep(text, src, tgt)
+                    # cache under the fallback engine label
+                    self.cache.put(text, src, tgt, "google_fallback",
+                                   corrected, translation)
+                    return corrected, translation
+                raise
 
         # 3. store in cache
         self.cache.put(text, src, tgt, cache_key_engine, corrected, translation)
@@ -151,24 +207,71 @@ class TranslationService:
             raise RuntimeError("OpenAI não configurado — adicione GITHUB_TOKEN no .env")
 
         target_name = LANGUAGES.get(tgt, tgt)
+        is_doc = self._content_type == "document"
         if src == "auto":
-            system = DETECT_PROMPT.format(target_language=target_name)
+            if is_doc:
+                system = DOCUMENT_DETECT_PROMPT.format(target_language=target_name)
+            else:
+                system = DETECT_PROMPT.format(target_language=target_name)
         else:
             source_name = LANGUAGES.get(src, src)
-            system = SYSTEM_PROMPT.format(
-                source_desc=source_name, target_language=target_name,
-            )
+            if is_doc:
+                system = DOCUMENT_SYSTEM_PROMPT.format(
+                    source_desc=source_name, target_language=target_name,
+                )
+            else:
+                system = SYSTEM_PROMPT.format(
+                    source_desc=source_name, target_language=target_name,
+                )
 
-        logger.info("OpenAI request: model=%s  %s → %s  chars=%d", mdl, src, tgt, len(text))
-        resp = self.client.chat.completions.create(
-            model=mdl,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": f"[Game dialog OCR]: {text}"},
-            ],
-            temperature=0.3,
-            max_tokens=600,
-        )
+        user_prefix = "[Document OCR]" if is_doc else "[Game dialog OCR]"
+        max_tok = 2048 if is_doc else 600
+
+        logger.info("OpenAI request: model=%s  %s → %s  chars=%d  type=%s",
+                    mdl, src, tgt, len(text), self._content_type)
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"{user_prefix}: {text}"},
+        ]
+
+        # Retry with exponential backoff on transient rate-limits.
+        # Daily quota exhaustion ("per 86400s") is NOT retried.
+        max_retries = 3
+        base_delay = 3.0
+        for attempt in range(max_retries + 1):
+            try:
+                resp = self.client.chat.completions.create(
+                    model=mdl,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=max_tok,
+                )
+                break
+            except Exception as exc:
+                err_msg = str(exc)
+                is_rate_limit = (
+                    "429" in err_msg
+                    or "rate" in err_msg.lower()
+                )
+                # Daily quota exhausted — do NOT retry, fail fast
+                if "86400" in err_msg or "UserByModelByDay" in err_msg:
+                    logger.error(
+                        "Daily API quota exhausted for model %s. "
+                        "Wait until tomorrow or switch engine.", mdl,
+                    )
+                    raise
+                # Transient rate limit — retry with backoff
+                if is_rate_limit and attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Rate limit hit (attempt %d/%d), retrying in %.1fs...",
+                        attempt + 1, max_retries, delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    raise
+
         raw = resp.choices[0].message.content.strip()
         logger.debug("OpenAI response (first 200): %s", raw[:200])
 

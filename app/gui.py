@@ -21,6 +21,7 @@ from .config import (
     API_MODELS,
     OCR_ENGINES,
     OCR_QUALITY_OPTIONS,
+    OCR_PRESETS,
     GAME_PRESETS,
     TRANSLATION_ENGINES,
 )
@@ -29,6 +30,7 @@ from .input import InputManager
 from .ocr import OCREngine
 from .overlay import MonitorOverlay, ScreenSelector, TextOverlay
 from .translation import TranslationService
+from .tts import TTSEngine
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ class App:
         self.ocr = OCREngine()
         self.translator = TranslationService()
         self.history = TranslationHistory()
+        self.tts = TTSEngine()
 
         self.capture_areas: list[tuple] = []
         self.last_text = ""
@@ -85,11 +88,19 @@ class App:
             quality=self.config["ocr_quality"],
             source_lang=self.config["source_language"],
         )
+        # determine content type from saved OCR quality
+        _init_preset = OCR_PRESETS.get(
+            self.config["ocr_quality"], OCR_PRESETS["balanced"],
+        )
+        _init_content = (
+            "document" if _init_preset.get("preprocess") == "document" else "game"
+        )
         self.translator.configure(
             model=self.config["api_model"],
             source_lang=self.config["source_language"],
             target_lang=self.config["target_language"],
             engine=self.config.get("translation_engine", "openai"),
+            content_type=_init_content,
         )
 
         self._build_gui()
@@ -158,6 +169,9 @@ class App:
             fg=FG_DIM, bg=BG_DARK, anchor="w",
             font=("Segoe UI", 9), padx=6, pady=3,
         ).pack(fill="x", side="bottom")
+
+        # F2 → speak translation aloud
+        self.root.bind_all("<F2>", lambda e: self._speak_translation())
 
     # -- shortcuts -------------------------------------------------------
 
@@ -413,6 +427,14 @@ class App:
         )
         self._auto_btn.pack(side="left", padx=(0, 4))
 
+        self._tts_btn = tk.Button(
+            frame, text="🔊",
+            command=self._speak_translation,
+            bg=LAVENDER, fg=BG, activebackground=MAUVE, relief="flat",
+            font=("Segoe UI", 10, "bold"), padx=8, pady=4, cursor="hand2",
+        )
+        self._tts_btn.pack(side="left", padx=(0, 4))
+
         tk.Button(
             frame, text="✕", command=self._clear,
             bg=RED, fg=BG, activebackground="#eba0ac", relief="flat",
@@ -532,7 +554,11 @@ class App:
         self.config["ocr_quality"] = code
         self.config.save()
         self.ocr.configure(quality=code)
-        logger.info("OCR quality → %s", code)
+        # update translator content type based on preset
+        preset = OCR_PRESETS.get(code, OCR_PRESETS["balanced"])
+        content_type = "document" if preset.get("preprocess") == "document" else "game"
+        self.translator.configure(content_type=content_type)
+        logger.info("OCR quality → %s (content_type=%s)", code, content_type)
 
     def _on_model_change(self, *_):
         model = self._model_var.get()
@@ -571,10 +597,14 @@ class App:
             quality=preset["ocr_quality"],
             source_lang=preset["source_language"],
         )
+        # determine content type from OCR preset
+        ocr_preset = OCR_PRESETS.get(preset["ocr_quality"], OCR_PRESETS["balanced"])
+        content_type = "document" if ocr_preset.get("preprocess") == "document" else "game"
         self.translator.configure(
             model=preset.get("api_model", "gpt-4o-mini"),
             source_lang=preset["source_language"],
             target_lang=preset["target_language"],
+            content_type=content_type,
         )
         self._status(f"Perfil aplicado: {label} ✓")
 
@@ -633,6 +663,7 @@ class App:
 
     def _clear(self):
         self._stop_auto_translate()
+        self.tts.stop()
         self.overlay.destroy()
         self.text_overlay.clear()
         self.capture_areas.clear()
@@ -659,6 +690,39 @@ class App:
         self.is_busy = True
         self._status("📸 Capturando tela...")
         threading.Thread(target=self._worker, daemon=True).start()
+
+    def _speak_translation(self):
+        """Read the current translation aloud via TTS (F2 hotkey)."""
+        if not self.tts.is_available:
+            self._status("⚠ Nenhum motor TTS disponível — instale pyttsx3 ou gTTS")
+            return
+
+        # if already playing, stop
+        if self.tts.is_playing:
+            self.tts.stop()
+            self._tts_btn.config(text="🔊")
+            self._status("🔇 Áudio interrompido")
+            return
+
+        # get current translation text
+        text = self.translated_text.get("1.0", "end").strip()
+        if not text:
+            self._status("⚠ Nenhuma tradução para ler")
+            return
+
+        lang = self.config["target_language"]
+        self._tts_btn.config(text="⏹")
+        self._status("🔊 Reproduzindo áudio...")
+
+        def on_done():
+            self.root.after(0, lambda: self._tts_btn.config(text="🔊"))
+
+        self.tts.speak(
+            text, lang=lang,
+            on_status=self._status_safe,
+            on_done=on_done,
+        )
+
 
     def _worker(self):
         try:
@@ -734,6 +798,12 @@ class App:
             logger.exception("Worker error")
             if "content_filter" in msg or "ResponsibleAI" in msg:
                 self._status_safe("⚠ Filtro de conteúdo ativado — tente novamente")
+            elif "86400" in msg or "UserByModelByDay" in msg:
+                self._status_safe(
+                    "⚠ Limite diário da API esgotado — troque para Google Translate"
+                )
+            elif "429" in msg or "rate" in msg.lower():
+                self._status_safe("⚠ Rate limit da API — aguarde alguns segundos e tente novamente")
             else:
                 self._status_safe(f"❌ Erro: {exc}")
         finally:
@@ -968,6 +1038,7 @@ class App:
 
     def _on_close(self):
         self._stop_auto_translate()
+        self.tts.stop()
         self.input.stop()
         self.overlay.destroy()
         self.text_overlay.clear()
